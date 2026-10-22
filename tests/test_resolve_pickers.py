@@ -341,5 +341,20 @@ class TestProloguePin(unittest.TestCase):
         self.assertEqual(rp.filter_prologue(ctx, set(), rp.CUBEC_PREFIX), set())
 
 
+class TestSourceRootNormalization(unittest.TestCase):
+
+    def test_worker_prefix_collapsed(self):
+        normal = (r"C:\buildworker\steam_rel_client_win64"
+                  r"\build\src\public\tier1\utlmemory.h")
+        hotfix = (r"C:\buildworker\steam_rel_client_hotfix_win64"
+                  r"\build\src\public\tier1\utlmemory.h")
+        self.assertEqual(rp.canon(normal), rp.canon(hotfix))
+        self.assertEqual(rp.canon(normal),
+                         rp.CS + r"public\tier1\utlmemory.h")
+
+    def test_plain_string_untouched(self):
+        self.assertEqual(rp.canon("num >= 0"), "num >= 0")
+
+
 if __name__ == "__main__":
     unittest.main()

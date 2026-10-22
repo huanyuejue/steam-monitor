@@ -149,5 +149,23 @@ argc = 0
 """)
 
 
+class TestChannelConstants(unittest.TestCase):
+    def test_channels_cover_all_methods(self):
+        for iface, spec in ri.IPC_IFACES.items():
+            names = {m[0] for m in spec["methods"]}
+            for channel in ri.IPC_CONSTANTS:
+                self.assertEqual(set(ri.IPC_CONSTANTS[channel][iface]), names)
+
+    def test_stable_and_beta_reroll_independently(self):
+        stable = ri.channel_spec(
+            "IClientUtils", ri.IPC_IFACES["IClientUtils"], "stable")
+        beta = ri.channel_spec(
+            "IClientUtils", ri.IPC_IFACES["IClientUtils"], "beta")
+        self.assertEqual(stable["methods"][0],
+                         ("GetAppID", 19, "09607EC4", "0AFE7552", 0))
+        self.assertEqual(beta["methods"][0],
+                         ("GetAppID", 19, "09607EC2", "0AFEF352", 0))
+
+
 if __name__ == "__main__":
     unittest.main()

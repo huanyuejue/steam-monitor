@@ -5,12 +5,13 @@ per-interface [Name] (interface_id, vtable_rva) plus per-method
 [Name.Method] (method_index, funcHash, wrapper_rva, fencepost, argc).
 
 funcHash / fencepost values are wire constants the wrapper writes into the
-outgoing IPC buffer (4-byte appends). They are NOT build-stable: the
-1792192922 beta re-rolled five of six methods. Re-derive on failure:
-disassemble the slot's wrapper, find each `mov dword ptr [..], imm32`
-followed by the 4-byte append helper call; first immediate = funcHash,
-second = fencepost. Only the two RVAs resolve per build. Resolution chain
-per interface, all asserted unique (FAIL loudly):
+outgoing IPC buffer (4-byte appends). They are NOT build-stable, and stable
+and beta roll them independently: the 1792192922 beta re-rolled five of six
+methods while stable kept the old pair. Select the channel's set with
+--channel. Re-derive on failure: disassemble the slot's wrapper, find each
+`mov dword ptr [..], imm32` followed by the 4-byte append helper call; first
+immediate = funcHash, second = fencepost. Only the two RVAs resolve per
+build. Resolution chain per interface, all asserted unique (FAIL loudly):
 
   RTTI TypeDescriptor name (pinned, e.g. .?AVIClientUserMap@@)
     -> Complete Object Locator (sig == 1, pTD == TD)
@@ -19,7 +20,7 @@ per interface, all asserted unique (FAIL loudly):
            whose first HASH_WINDOW bytes contain the method's funcHash.
 
 Usage:
-    python3 tools/resolve_ipc.py resolve --dll <dll>
+    python3 tools/resolve_ipc.py resolve --dll <dll> --channel stable
         --out-dir ipc/ [--verify <ground-truth.toml>]
 """
 
@@ -39,29 +40,68 @@ spec.loader.exec_module(rp)
 
 HASH_WINDOW = 0x400
 
-# iface -> interface_id, RTTI TypeDescriptor name, and wire-stable methods:
-# (method, method_index, funcHash, fencepost, argc).
+# iface -> interface_id, RTTI TypeDescriptor name, and methods:
+# (method, method_index, argc). Method order and indexes are wire-stable;
+# only the funcHash/fencepost pair differs per channel.
 IPC_IFACES = {
     "IClientUser": {
         "id": 1,
         "td": b".?AVIClientUserMap@@",
         "methods": [
-            ("GetSteamID", 10, "D6FC3200", "D7058CA5", 0),
-            ("GetAppOwnershipTicketExtendedData", 105, "5578709F",
-             "55D3418F", 2),
-            ("RequestEncryptedAppTicket", 120, "BBB80477", "BC2703B9", 2),
-            ("GetEncryptedAppTicket", 121, "25D6BB1C", "2646F563", 1),
+            ("GetSteamID", 10, 0),
+            ("GetAppOwnershipTicketExtendedData", 105, 2),
+            ("RequestEncryptedAppTicket", 120, 2),
+            ("GetEncryptedAppTicket", 121, 1),
         ],
     },
     "IClientUtils": {
         "id": 4,
         "td": b".?AVIClientUtilsMap@@",
         "methods": [
-            ("GetAppID", 19, "09607EC2", "0AFEF352", 0),
-            ("GetAPICallResult", 24, "2D3D3979", "2EDFDD1A", 3),
+            ("GetAppID", 19, 0),
+            ("GetAPICallResult", 24, 3),
         ],
     },
 }
+
+# Per-channel wire constants: iface -> method -> (funcHash, fencepost).
+# Stable and beta are separate builds and have re-rolled these independently.
+IPC_CONSTANTS = {
+    "stable": {
+        "IClientUser": {
+            "GetSteamID": ("D6FC3200", "D7058CA5"),
+            "GetAppOwnershipTicketExtendedData": ("C7E71245", "C8449840"),
+            "RequestEncryptedAppTicket": ("25D6BB1D", "2646B663"),
+            "GetEncryptedAppTicket": ("E0468CB4", "E0B80200"),
+        },
+        "IClientUtils": {
+            "GetAppID": ("09607EC4", "0AFE7552"),
+            "GetAPICallResult": ("2D3D3947", "2EDF5EE6"),
+        },
+    },
+    "beta": {
+        "IClientUser": {
+            "GetSteamID": ("D6FC3200", "D7058CA5"),
+            "GetAppOwnershipTicketExtendedData": ("5578709F", "55D3418F"),
+            "RequestEncryptedAppTicket": ("BBB80477", "BC2703B9"),
+            "GetEncryptedAppTicket": ("25D6BB1C", "2646F563"),
+        },
+        "IClientUtils": {
+            "GetAppID": ("09607EC2", "0AFEF352"),
+            "GetAPICallResult": ("2D3D3979", "2EDFDD1A"),
+        },
+    },
+}
+
+
+def channel_spec(iface, spec, channel):
+    """Attach the channel's wire constants to one interface spec."""
+    consts = IPC_CONSTANTS[channel][iface]
+    methods = []
+    for name, idx, argc in spec["methods"]:
+        func_hash, fence = consts[name]
+        methods.append((name, idx, func_hash, fence, argc))
+    return {**spec, "methods": methods}
 
 
 def image_base(buf) -> int:
@@ -209,7 +249,8 @@ def cmd_resolve(args):
     entries = sorted(img.pdata_entries())
     pdata = set(entries)
     resolved, failed = [], []
-    for iface, spec in IPC_IFACES.items():
+    for iface, base_spec in IPC_IFACES.items():
+        spec = channel_spec(iface, base_spec, args.channel)
         vt, methods, err = resolve_iface(spec, img, spans, base, pdata)
         if err is not None:
             failed.append((iface, err))
@@ -246,6 +287,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("resolve")
     r.add_argument("--dll", required=True)
+    r.add_argument("--channel", required=True, choices=sorted(IPC_CONSTANTS))
     r.add_argument("--out-dir", default=None)
     r.add_argument("--verify", default=None)
     args = ap.parse_args()

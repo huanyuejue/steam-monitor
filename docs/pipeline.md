@@ -24,7 +24,8 @@ Blocked-run triage notes:
   extract the new constants from the wrapper's outgoing-buffer writes —
   each `mov dword ptr [..], imm32` followed by the 4-byte append helper
   (`call <helper>`); first immediate is funcHash, second is fencepost.
-  Update `IPC_IFACES` in `tools/resolve_ipc.py` and re-run.
+  Update the channel's `IPC_CONSTANTS` entry in `tools/resolve_ipc.py` and
+  re-run with the same `--channel`.
 
 No TOMLs are shipped or fetched — every hook derives from the DLLs alone.
 `tools/migrate_patterns.py` is a seed-era analysis aid, not in the pipeline.
@@ -37,5 +38,5 @@ python3 tools/fetch_client.py --out bins/ --channels stable beta
 python3 tools/resolve_patterns.py resolve \
   --dll bins/stable/steamclient64.dll --side steamclient --out-dir pattern/
 python3 tools/resolve_ipc.py resolve \
-  --dll bins/stable/steamclient64.dll --out-dir ipc/
+  --dll bins/stable/steamclient64.dll --channel stable --out-dir ipc/
 ```

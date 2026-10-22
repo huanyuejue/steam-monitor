@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import bisect
+import re
 import struct
 import sys
 import tomllib
@@ -47,7 +48,17 @@ ANCHORS = {
     },
 }
 
-CS = "C:\\buildworker\\steam_rel_client_win64\\build\\src\\"
+# Source paths embed the build worker's tree. Valve rebuilds a channel from a
+# different worker (e.g. steam_rel_client_hotfix_win64) without changing the
+# code, so collapse the worker-specific prefix before matching.
+SRC_ROOT_RE = re.compile(r"^[A-Za-z]:\\buildworker\\[^\\]+\\build\\src\\")
+CS = "<SRC>\\"
+
+
+def canon(s: str) -> str:
+    return SRC_ROOT_RE.sub(lambda _: CS, s)
+
+
 EXACT_ANCHORS = {
     # hook -> full string-ref set (exactly one func matches).
     "steamclient": {
@@ -428,8 +439,10 @@ class Ctx:
                 else:
                     i += 1
         self.by_text = {}
+        self.canon_text = {}
         for rva, s in self.strings.items():
             self.by_text.setdefault(s, []).append(rva)
+            self.canon_text.setdefault(canon(s), []).append(rva)
         self._eset = set(self.entries)
         self._sizes = {en: nxt - en for en, nxt in
                        zip(self.entries, self.entries[1:] + [self.entries[-1]])}
@@ -525,7 +538,7 @@ class Ctx:
     def referencing_funcs(self, s: str) -> set[int]:
         xm = self.xref_map()
         funcs = set()
-        for rva in self.by_text.get(s, []):
+        for rva in self.canon_text.get(canon(s), []):
             funcs |= xm.get(rva, set())
         return funcs
 
@@ -680,7 +693,7 @@ class Ctx:
         out: dict[int, list[str]] = {}
         for rva, s in self.strings.items():
             for f in xm.get(rva, set()):
-                out.setdefault(f, []).append(s)
+                out.setdefault(f, []).append(canon(s))
         self._rbf = out
         return out
 

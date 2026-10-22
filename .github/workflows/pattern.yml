@@ -83,7 +83,7 @@ jobs:
               --out-dir pattern/ > "resolve_sui_$channel.log" 2>&1
             CODE_SUI=$?
             python3 tools/resolve_ipc.py resolve \
-              --dll "bins/$channel/steamclient64.dll" \
+              --dll "bins/$channel/steamclient64.dll" --channel "$channel" \
               --out-dir ipc/ > "resolve_ipc_$channel.log" 2>&1
             CODE_IPC=$?
             set -e
