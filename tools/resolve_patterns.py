@@ -325,10 +325,18 @@ def p2_readasbin(ctx, lp, cm):
 def p2_findcreate(ctx, rb, cm):
     rbf = ctx.refs_by_func()
     base = rb & ~0xFFFF
-    leaves = [t for t in ctx.entries
-              if base <= t < base + 0x10000 and not rbf.get(t)
-              and not ctx.callees(t) and len(cm.get(t, ())) >= 100]
-    return _max_unique([(t, len(cm.get(t, ()))) for t in leaves],
+
+    def leaves(lo, hi):
+        return [t for t in ctx.entries
+                if lo <= t < hi and not rbf.get(t)
+                and not ctx.callees(t) and len(cm.get(t, ())) >= 100]
+
+    cands = leaves(base, base + 0x10000)
+    if not cands:
+        # KeyValues 系列函数不保证落在同一 64KB 页：ReadAsBinary 上移一页后
+        # FindOrCreateKey 可能仍留在前一页，原窗口落空时回退一页再找。
+        cands = leaves(base - 0x10000, base)
+    return _max_unique([(t, len(cm.get(t, ()))) for t in cands],
                        "FindOrCreate cands")
 
 

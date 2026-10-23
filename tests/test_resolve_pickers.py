@@ -195,6 +195,31 @@ class TestClientChain(unittest.TestCase):
         self.assertEqual(rp.p2_findcreate(ctx, rb, ctx.callers_map()),
                          (0xD143D0, None))
 
+    def test_findcreate_window_preferred(self):
+        # 原窗口内有候选就不回退，即使前一页的调用次数更高
+        rb = 0xD17160
+        ctx = mkctx(entries=[0xD07100, 0xD13470],
+                    callers={0xD07100: range(400), 0xD13470: range(120)})
+        self.assertEqual(rp.p2_findcreate(ctx, rb, ctx.callers_map()),
+                         (0xD13470, None))
+
+    def test_findcreate_cross_page_fallback(self):
+        # ReadAsBinary 跨过 64KB 边界后，FindOrCreateKey 仍留在前一页
+        rb = 0xDA0AE0
+        ctx = mkctx(entries=[0xD9DEC0, 0xDA3690],
+                    callers={0xD9DEC0: range(170), 0xDA3690: range(51)})
+        self.assertEqual(rp.p2_findcreate(ctx, rb, ctx.callers_map()),
+                         (0xD9DEC0, None))
+
+    def test_findcreate_cross_page_max(self):
+        # 回退页内多个候选取调用次数最大者
+        rb = 0xDA0AE0
+        ctx = mkctx(entries=[0xD9CFA0, 0xD9DEC0, 0xD9E680],
+                    callers={0xD9CFA0: range(112), 0xD9DEC0: range(170),
+                             0xD9E680: range(104)})
+        self.assertEqual(rp.p2_findcreate(ctx, rb, ctx.callers_map()),
+                         (0xD9DEC0, None))
+
     def test_pplu(self):
         P1, P1E, P2, P2E, U = 0x5001, 0x5002, 0x5003, 0x5004, 0x6001
         img = Img()
