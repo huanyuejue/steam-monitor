@@ -350,6 +350,39 @@ class FetchMainTests(unittest.TestCase):
             # 没有下载任何二进制，bins/beta 不应被创建
             self.assertFalse((tmp / "bins" / "beta").exists())
 
+    def test_stable_wins_over_beta_for_same_version(self):
+        # stable 与 beta 指向同一个 build 时，两个通道的版本号相同。
+        # beta 在循环里后跑，不能把通道改成 beta，否则 README 会把稳定版标成 Beta。
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            vfile = tmp / "versions.json"
+            # 先让该 build 以 beta 身份发布过（只存在于 versions 记录里）
+            code, _ = self._run(
+                tmp,
+                [self._manifest("333"), self._zip("shared")],
+                ["--channels", "beta", "--versions-file", str(vfile)],
+            )
+            self.assertEqual(code, 0)
+            entry = json.loads(vfile.read_text())["333"]
+            published = [entry["steamclient64.dll"], entry["SteamUI.dll"]]
+
+            # stable 与 beta 同版本号同 DLL，都已发布过，走 resolve_known 快路径
+            code, _ = self._run(
+                tmp,
+                [self._manifest("333"), self._manifest("333")],
+                [
+                    "--channels", "stable", "beta",
+                    "--versions-file", str(vfile),
+                    "--published-shas", *published,
+                ],
+            )
+            # 返回 3：没有新二进制，但修正了 channel 标志，调用方需要提交记录
+            self.assertEqual(code, 3)
+            self.assertEqual(json.loads(vfile.read_text())["333"]["channel"], "stable")
+
     def test_unknown_channel_fails(self):
         import tempfile
 

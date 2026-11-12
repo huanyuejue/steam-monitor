@@ -143,6 +143,8 @@ def main() -> int:
     fetched: list[tuple[str, str, dict[str, str], dict[str, bytes]]] = []
     # SHA 组已发布但版本号是新的：TOML 不用重发，版本记录仍要补上
     seen_versions: dict[str, dict[str, str]] = {}
+    # 仅修正了已有条目的 channel（stable/beta 同 build 时后到的通道会改标志）
+    channel_fixed = False
     try:
         for channel in args.channels:
             version, packages = parse_manifest(
@@ -152,6 +154,13 @@ def main() -> int:
 
             if resolve_known(version, versions, args.published_shas) is not None:
                 print(f"version already published, skipping download ({channel})")
+                # 记录里的通道可能与当前不符：stable 与 beta 指向同一 build 时
+                # 只有先到的通道被记下，后到的版本号若已存在就一直是旧通道。
+                # 以 stable 为准修正，避免 README 把稳定版标成 Beta
+                if channel == "stable" and versions[version].get("channel") != "stable":
+                    print(f"marking {version} as stable (was {versions[version].get('channel')})")
+                    versions[version]["channel"] = "stable"
+                    channel_fixed = True
                 continue
 
             dlls: dict[str, bytes] | None = None
@@ -175,7 +184,11 @@ def main() -> int:
                     f"identical DLLs already published as {twin}, "
                     f"recording {version} ({channel}) without republishing"
                 )
-                seen_versions[version] = {"channel": channel, **shas}
+                # stable 优先：同一版本号既在 stable 又在 beta 时记成 stable，
+                # 否则 README 里稳定版会被标成 Beta
+                existing_channel = seen_versions.get(version, versions.get(version, {})).get("channel")
+                if channel == "stable" or existing_channel != "stable":
+                    seen_versions[version] = {"channel": channel, **shas}
                 continue
 
             fetched.append((channel, version, shas, dlls))
@@ -196,17 +209,21 @@ def main() -> int:
     # 只补齐版本记录的通道：没有新 SHA 要发布，但记录不能丢
     versions.update(seen_versions)
 
-    if args.versions_file is not None and (fetched or seen_versions):
+    if args.versions_file is not None and (fetched or seen_versions or channel_fixed):
         versions_path = Path(args.versions_file)
         versions_path.parent.mkdir(parents=True, exist_ok=True)
         ordered = dict(sorted(versions.items(), key=lambda kv: int(kv[0])))
         versions_path.write_text(json.dumps(ordered, indent=2) + "\n")
 
     if not fetched:
-        if seen_versions:
-            # 只补了版本记录，没有新二进制要解析。用独立退出码与"有新文件"
-            # 区分开：调用方据此只提交 versions.json，不走解析与渲染
-            print("recorded new versions without publishing: " + " ".join(seen_versions))
+        if seen_versions or channel_fixed:
+            # 没有新二进制要解析，但版本记录变了（补了新版本号，或修正了
+            # stable/beta 标志）。用独立退出码与"有新文件"区分开：
+            # 调用方据此只提交 versions.json，不走解析与渲染
+            if seen_versions:
+                print("recorded new versions without publishing: " + " ".join(seen_versions))
+            if channel_fixed:
+                print("corrected channel flag for already published versions")
             return 3
         print("all versions already published")
         return 2
