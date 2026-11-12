@@ -45,13 +45,33 @@ def needs_publish(new_shas: list[str], published_shas: list[str]) -> bool:
     return not set(new_shas) <= set(published_shas)
 
 
+def _shas_of(entry: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in entry.items() if k != "channel"}
+
+
+def find_by_shas(
+    shas: dict[str, str], versions: dict[str, dict[str, str]]
+) -> str | None:
+    """按 SHA 组反查已记录的版本号。
+
+    Steam 常让 stable 与 beta 指向同一个 build：两个通道版本号与 DLL 都相同，
+    只有先到的通道会进 versions.json。后到的通道按 version 查不到，但 SHA 组
+    能对上，说明对应的 TOML 早已发布，不必重复下载与解析。
+    """
+    wanted = set(shas.values())
+    for known_version, entry in versions.items():
+        if wanted <= set(_shas_of(entry).values()):
+            return known_version
+    return None
+
+
 def resolve_known(
     version: str, versions: dict[str, dict[str, str]], published_shas: list[str]
 ) -> dict[str, str] | None:
     known = versions.get(version)
     if known is None:
         return None
-    shas = {k: v for k, v in known.items() if k != "channel"}
+    shas = _shas_of(known)
     if set(shas.values()) <= set(published_shas):
         return shas
     return None
@@ -121,6 +141,8 @@ def main() -> int:
         versions = json.loads(Path(args.versions_file).read_text())
 
     fetched: list[tuple[str, str, dict[str, str], dict[str, bytes]]] = []
+    # SHA 组已发布但版本号是新的：TOML 不用重发，版本记录仍要补上
+    seen_versions: dict[str, dict[str, str]] = {}
     try:
         for channel in args.channels:
             version, packages = parse_manifest(
@@ -143,6 +165,19 @@ def main() -> int:
                 print("no package contained all of " + ", ".join(TARGET_DLLS) + f" ({channel})")
                 return 1
             shas = {name: hashlib.sha256(data).hexdigest() for name, data in dlls.items()}
+
+            # 同一组 DLL 可能已被另一个通道发布过（stable 与 beta 常同步指向同一个
+            # build）。此时 TOML 早已存在，只需把新版本号补进记录，让按版本号查询
+            # 能对上，不必再走一遍解析与提交。
+            twin = find_by_shas(shas, versions)
+            if twin is not None:
+                print(
+                    f"identical DLLs already published as {twin}, "
+                    f"recording {version} ({channel}) without republishing"
+                )
+                seen_versions[version] = {"channel": channel, **shas}
+                continue
+
             fetched.append((channel, version, shas, dlls))
     except Exception as e:
         print(f"failed to fetch manifest or package: {e}")
@@ -158,12 +193,21 @@ def main() -> int:
         )
         if args.versions_file is not None:
             versions[version] = {"channel": channel, **shas}
-    if args.versions_file is not None and fetched:
+    # 只补齐版本记录的通道：没有新 SHA 要发布，但记录不能丢
+    versions.update(seen_versions)
+
+    if args.versions_file is not None and (fetched or seen_versions):
         versions_path = Path(args.versions_file)
         versions_path.parent.mkdir(parents=True, exist_ok=True)
-        versions_path.write_text(json.dumps(versions, indent=2) + "\n")
+        ordered = dict(sorted(versions.items(), key=lambda kv: int(kv[0])))
+        versions_path.write_text(json.dumps(ordered, indent=2) + "\n")
 
     if not fetched:
+        if seen_versions:
+            # 没有新文件要发布，但补到了版本记录：调用方需要提交 versions.json，
+            # 不能让 workflow 当成"无事可做"跳过
+            print("recorded new versions without publishing: " + " ".join(seen_versions))
+            return 0
         print("all versions already published")
         return 2
     new_shas = [s for _, _, shas, _ in fetched for s in shas.values()]

@@ -145,6 +145,46 @@ class ResolveKnownTests(unittest.TestCase):
         self.assertIsNone(fetch_client.resolve_known("1788652215", self.VERSIONS, ["aa"]))
 
 
+class FindByShasTests(unittest.TestCase):
+    VERSIONS = {
+        "1794266161": {
+            "channel": "beta",
+            "steamclient64.dll": "aa",
+            "SteamUI.dll": "bb",
+        }
+    }
+
+    def test_same_sha_group_finds_twin(self):
+        # stable 与 beta 指向同一 build 时，后到的通道按 version 查不到，
+        # 但 SHA 组能对上，应识别为同一个已发布版本
+        self.assertEqual(
+            fetch_client.find_by_shas(
+                {"steamclient64.dll": "aa", "SteamUI.dll": "bb"}, self.VERSIONS
+            ),
+            "1794266161",
+        )
+
+    def test_all_new_shas_returns_none(self):
+        self.assertIsNone(
+            fetch_client.find_by_shas(
+                {"steamclient64.dll": "cc", "SteamUI.dll": "dd"}, self.VERSIONS
+            )
+        )
+
+    def test_partial_match_returns_none(self):
+        # 只有一个 DLL 相同不能算同一版本，否则会把新旧 build 混为一谈
+        self.assertIsNone(
+            fetch_client.find_by_shas(
+                {"steamclient64.dll": "aa", "SteamUI.dll": "zz"}, self.VERSIONS
+            )
+        )
+
+    def test_empty_versions_returns_none(self):
+        self.assertIsNone(
+            fetch_client.find_by_shas({"steamclient64.dll": "aa"}, {})
+        )
+
+
 class ChannelManifestTests(unittest.TestCase):
     def test_channel_manifest_urls(self):
         self.assertEqual(
