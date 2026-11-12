@@ -315,6 +315,41 @@ class FetchMainTests(unittest.TestCase):
             versions = json.loads(vfile.read_text())
             self.assertEqual(versions["222"]["channel"], "beta")
 
+    def test_twin_build_records_version_only(self):
+        # stable 与 beta 指向同一个 build：先到的通道已发布过同一组 SHA，
+        # 后到的通道应补版本记录并返回 3（只提交 versions.json，不重跑解析）
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            vfile = tmp / "versions.json"
+            # 先让 stable 正常发布
+            code, _ = self._run(
+                tmp,
+                [self._manifest("111"), self._zip("same")],
+                ["--channels", "stable", "--versions-file", str(vfile)],
+            )
+            self.assertEqual(code, 0)
+            published = json.loads(vfile.read_text())["111"]["steamclient64.dll"]
+
+            # beta 版本号不同但 DLL 完全相同，已发布的 SHA 集合覆盖它
+            code, _ = self._run(
+                tmp,
+                [self._manifest("999"), self._zip("same")],
+                [
+                    "--channels", "beta",
+                    "--versions-file", str(vfile),
+                    "--published-shas", published,
+                ],
+            )
+            self.assertEqual(code, 3)
+            versions = json.loads(vfile.read_text())
+            self.assertIn("999", versions)
+            self.assertEqual(versions["999"]["channel"], "beta")
+            # 没有下载任何二进制，bins/beta 不应被创建
+            self.assertFalse((tmp / "bins" / "beta").exists())
+
     def test_unknown_channel_fails(self):
         import tempfile
 

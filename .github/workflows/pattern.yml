@@ -51,8 +51,14 @@ jobs:
           CODE=$?
           set -e
           # exit 2 = all SHAs published: files still written, downstream skips.
+          # exit 3 = no new binaries, but versions.json gained records for builds
+          # already published under another channel (stable and beta often point
+          # at the same build). Commit just that file and stop.
           if [ "$CODE" -eq 2 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$CODE" -eq 3 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "versions_only=true" >> "$GITHUB_OUTPUT"
           elif [ "$CODE" -ne 0 ]; then
             exit "$CODE"
           fi
@@ -96,6 +102,26 @@ jobs:
           echo "code=$CODE_ALL" >> "$GITHUB_OUTPUT"
         env:
           STEPS_FETCH_OUTPUTS_CHANNELS: ${{ steps.fetch.outputs.channels }}
+
+      - name: Commit version records
+        if: steps.fetch.outputs.versions_only == 'true'
+        env:
+          TZ: UTC
+        run: |
+          # 这批 build 早已以另一个通道发布过，pattern/ 与 ipc/ 都没有新增文件，
+          # 只有 versions.json 多了记录。单独提交它，让按版本号查询能对上。
+          python3 -c "import json; print(json.dumps({'versions': json.load(open('pattern/versions.json'))}))" > /tmp/readme_data.json
+          npx -y knap@0.4.2 render templates/readme.md \
+            --data /tmp/readme_data.json --output README.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pattern/versions.json README.md
+          if git diff --cached --quiet; then
+            echo "versions.json unchanged, nothing to commit"
+            exit 0
+          fi
+          git commit -m "Record Steam build versions published under another channel"
+          git push
 
       - name: File issue on unresolvable entries
         if: steps.fetch.outputs.skip != 'true' && steps.resolve.outputs.code != '0'

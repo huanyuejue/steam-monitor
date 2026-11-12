@@ -204,10 +204,10 @@ def main() -> int:
 
     if not fetched:
         if seen_versions:
-            # 没有新文件要发布，但补到了版本记录：调用方需要提交 versions.json，
-            # 不能让 workflow 当成"无事可做"跳过
+            # 只补了版本记录，没有新二进制要解析。用独立退出码与"有新文件"
+            # 区分开：调用方据此只提交 versions.json，不走解析与渲染
             print("recorded new versions without publishing: " + " ".join(seen_versions))
-            return 0
+            return 3
         print("all versions already published")
         return 2
     new_shas = [s for _, _, shas, _ in fetched for s in shas.values()]
