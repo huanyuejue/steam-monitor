@@ -149,43 +149,22 @@ jobs:
           if gh issue list --state open --json title --jq '.[].title' \
               | grep -qF "beta ${BETA_SC}/${BETA_SUI}"; then
             echo "blocked issue for beta ${BETA_SC}/${BETA_SUI} already open, skipping"
-            exit 0
+          else
+            {
+              echo "Full log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              echo ""
+              echo "Nothing was published (block-on-failure). Triage the skipped entries by hand, then re-run with workflow_dispatch."
+              echo ""
+              cat skips.txt
+            } > issue_body.md
+            gh issue create \
+              --title "Pattern resolve blocked: stable ${STABLE_SC}/${STABLE_SUI}, beta ${BETA_SC}/${BETA_SUI}" \
+              --body-file issue_body.md
           fi
-          {
-            echo "Full log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo ""
-            echo "Nothing was published (block-on-failure). Triage the skipped entries by hand, then re-run with workflow_dispatch."
-            echo ""
-            cat skips.txt
-          } > issue_body.md
-          gh issue create \
-            --title "Pattern resolve blocked: stable ${STABLE_SC}/${STABLE_SUI}, beta ${BETA_SC}/${BETA_SUI}" \
-            --body-file issue_body.md
-
-      - name: Close resolved blocked issues
-        if: steps.fetch.outputs.skip != 'true' && steps.resolve.outputs.code == '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # A SHA in an issue title is published when its TOML exists under
-          # pattern/; publish is all-or-nothing, so every token present means
-          # the whole blocked build landed.
-          gh issue list --state open --search "Pattern resolve blocked in:title" \
-            --json number,title \
-            --jq '.[] | "\(.number)\t\(.title)"' | while IFS="$(printf '\t')" read -r num title; do
-            shas=$(echo "$title" | grep -oE '[0-9a-f]{64}' || true)
-            if [ -z "$shas" ]; then continue; fi
-            ok=1
-            for s in $shas; do
-              if [ ! -f "pattern/steamclient/$s.toml" ] && [ ! -f "pattern/steamui/$s.toml" ]; then
-                ok=0
-              fi
-            done
-            if [ "$ok" -eq 1 ]; then
-              gh issue close "$num" \
-                --comment "All SHAs from this issue are now published (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
-            fi
-          done
+          # 建 issue 只是通知，不代表这次解析没问题：不显式失败的话，
+          # 建 issue 成功会把整个 run 染绿，失败被绿勾掩盖
+          echo "::error::resolve 存在未解析条目，本次未发布任何产物（见上方 FAIL 行与已归档 issue）"
+          exit 1
 
       - name: Publish
         if: steps.fetch.outputs.skip != 'true' && steps.resolve.outputs.code == '0'
@@ -202,3 +181,20 @@ jobs:
           git add pattern/ ipc/ README.md
           git commit -m "Update Steam rule patterns (stable $(ver stable), beta $(ver beta))"
           git push
+
+      - name: Close stale blocked issues
+        if: steps.fetch.outputs.skip != 'true' && steps.resolve.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 放在 Publish 之后：走到这里说明解析、构建 TOML 与推送全部成功，
+          # pipeline 已经恢复。issue 里记的是被更新版本取代的旧构建，
+          # 它们的 TOML 永远不会再补发——原先按"标题里每个 SHA 都已发布"
+          # 判定，这类 issue 就永远关闭不了。这里改为恢复即收尾。
+          gh issue list --state open --search "Pattern resolve blocked in:title" \
+            --json number,title \
+            --jq '.[] | "\(.number)\t\(.title)"' | while IFS="$(printf '\t')" read -r num title; do
+            [ -n "$num" ] || continue
+            gh issue close "$num" \
+              --comment "本次解析与发布已恢复正常（run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}）。该 issue 记录的构建已被更新版本取代，不再补发，因此关闭。" || true
+          done
