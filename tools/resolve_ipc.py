@@ -87,8 +87,8 @@ IPC_CONSTANTS = {
             "GetEncryptedAppTicket": ("25D6BB1C", "2646F563"),
         },
         "IClientUtils": {
-            "GetAppID": ("09607EC2", "0AFEF352"),
-            "GetAPICallResult": ("2D3D3979", "2EDFDD1A"),
+            "GetAppID": ("09607EC0", "0AFF7152"),
+            "GetAPICallResult": ("2D3D397B", "2EE05B1E"),
         },
     },
 }

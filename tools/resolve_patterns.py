@@ -109,6 +109,11 @@ GPI_PREFIX = bytes.fromhex(
 # 6980e1cd beta gained a second exact-ref-set twin with a different prologue).
 CUBEC_PREFIX = bytes.fromhex(
     "48 89 5C 24 08 57 48 83 EC 30 48 8B D9 8D 7A 01 0F B6 49 1F")
+# GetPipeClient 入口（24B，无相对位移）。这个函数是纯索引查找，各版本字节
+# 不变；编译器会把它和相邻小函数并进同一个 pdata chunk，此时函数大小判据
+# 失效，用这段入口字节兜底。
+PIPECLIENT_PREFIX = bytes.fromhex(
+    "85 D2 74 30 44 0F B7 CA 44 3B 49 60 73 26 48 8B 41 40 45 8B C1 4D 03 C0")
 
 
 # Prologue byte pin per side/hook, applied after candidate selection.
@@ -374,11 +379,18 @@ def p2_appid(ctx):
 
 
 def p2_pipeclient(ctx):
+    rbf = ctx.refs_by_func()
     cands = [t for t in ctx.entries
-             if not ctx.refs_by_func().get(t) and ctx.func_size(t) == 0x150]
+             if not rbf.get(t) and ctx.func_size(t) == 0x150]
     counts = ctx.e8_count_many({t + 0xA0 for t in cands})
     hot = [t + 0xA0 for t in cands if counts[t + 0xA0] >= 5]
-    return _only(hot, "GetPipeClient cands")
+    if len(hot) == 1:
+        return hot[0], None
+    # 独立 entry 判据落空时，说明函数被并进了别人的 pdata chunk，
+    # 退回入口字节匹配
+    hits = [r for r in ctx.img.scan(list(PIPECLIENT_PREFIX))
+            if not rbf.get(r)]
+    return _only(hits, "GetPipeClient cands")
 
 
 def p2_getoradd(ctx, ga, cm):

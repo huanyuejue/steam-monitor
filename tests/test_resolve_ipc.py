@@ -157,14 +157,17 @@ class TestChannelConstants(unittest.TestCase):
                 self.assertEqual(set(ri.IPC_CONSTANTS[channel][iface]), names)
 
     def test_stable_and_beta_reroll_independently(self):
+        # 断言的是"取的是各自通道的常量"，不绑定具体数值：
+        # funcHash/fencepost 会随 Steam 重新掷骰，每次都要跟着改测试没有意义
         stable = ri.channel_spec(
             "IClientUtils", ri.IPC_IFACES["IClientUtils"], "stable")
         beta = ri.channel_spec(
             "IClientUtils", ri.IPC_IFACES["IClientUtils"], "beta")
-        self.assertEqual(stable["methods"][0],
-                         ("GetAppID", 19, "09607EC4", "0AFE7552", 0))
-        self.assertEqual(beta["methods"][0],
-                         ("GetAppID", 19, "09607EC2", "0AFEF352", 0))
+        for channel, spec in (("stable", stable), ("beta", beta)):
+            func_hash, fence = ri.IPC_CONSTANTS[channel]["IClientUtils"]["GetAppID"]
+            self.assertEqual(spec["methods"][0],
+                             ("GetAppID", 19, func_hash, fence, 0))
+        self.assertNotEqual(stable["methods"][0], beta["methods"][0])
 
 
 if __name__ == "__main__":
