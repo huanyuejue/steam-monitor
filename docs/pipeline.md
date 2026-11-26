@@ -36,6 +36,20 @@ Blocked-run triage notes:
 - Issue filing needs the repository's Issues feature enabled. With issues
   disabled, `gh issue list` and `gh issue create` return 410 and the triage
   step fails on its own, hiding the resolve failure it exists to report.
+- `DepotLicenseGate` (downstream hook, gates per-depot license checks) is
+  derived from call structure rather than a string anchor: it sits between
+  `BuildDepotDependency` and `CheckAppOwnership`, calls the latter and is
+  called by the former. `BuildDepotDependency` is emitted as several
+  adjacent .pdata entries without chain records, so `Ctx.pdata_chunks`
+  walks them by address continuity, stopping when a fragment actually ends
+  (ret, or a jmp leaving the image's function set) — a fragment that merely
+  ends on a `je` still continues. If this rule ever reports `0` or `>1`
+  candidates, the calling relationship probably moved; do not widen it.
+  Every build observed so far keeps the function's first bytes and length
+  identical (`40 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 68
+  45 8B F0 4C`, 288 bytes) while the RVA wanders, so a byte-signature scan
+  for that exact prologue is the fallback worth trying before touching the
+  call-graph rule.
 
 No TOMLs are shipped or fetched — every hook derives from the DLLs alone.
 `tools/migrate_patterns.py` is a seed-era analysis aid, not in the pipeline.
