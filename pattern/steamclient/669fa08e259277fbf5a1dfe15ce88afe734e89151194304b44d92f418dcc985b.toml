@@ -40,6 +40,11 @@ name = "ConfigStoreGetBinary"
 rva = "0x5EFD90"
 sig = "40 53 55 56 57 48 83 EC 38 48 63 FA 49 8B E9 8B D7 49 8B D8 48 8B F1 E8"
 
+[0xDE81583B]
+name = "DepotLicenseGate"
+rva = "0x9FDA30"
+sig = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 68 45 8B F0 4C"
+
 [0xAC76B47D]
 name = "GetAppDataFromAppInfo"
 rva = "0x4DE420"

@@ -29,6 +29,9 @@ spec.loader.exec_module(mp)
 
 SIG_CAP = 80
 
+# .pdata 里表示「这条不是链式片段」的父记录占位值
+INVALID_CHAIN = 0xFFFFFFFF
+
 # hook name -> anchor string (referenced from exactly one func on every build).
 ANCHORS = {
     "steamclient": {
@@ -415,6 +418,31 @@ def p2_checkapp(ctx, cm):
         "CheckApp cands")
 
 
+def p2_depotlicensegate(ctx, builddepot, checkapp):
+    """哨兵：判断某用户对某 depot 有没有许可。
+
+    它夹在 BuildDepotDependency 和 CheckAppOwnership 之间：被前者调用，
+    自己又调用后者。BuildDepotDependency 会被编译器切成好几段独立条目，
+    所以先把同一函数的片段全收集起来，再在这些片段的直接调用里找。
+    """
+    if builddepot is None:
+        return None, "BuildDepotDependency unresolved"
+    if checkapp is None:
+        return None, "CheckAppOwnership unresolved"
+
+    family_callees: set[int] = set()
+    for fragment in ctx.pdata_chunks(builddepot):
+        family_callees.update(ctx.direct_callees(fragment))
+
+    candidates = {
+        callee for callee in family_callees
+        if callee != checkapp
+        and ctx.pdata_root(callee) == callee
+        and checkapp in ctx.direct_callees(callee)
+    }
+    return _only(candidates, "DepotLicenseGate cands")
+
+
 def p2_scb(ctx):
     refs = ctx.referencing_funcs(SCB_STR)
     if len(refs) != 1:
@@ -466,6 +494,136 @@ class Ctx:
         self._eset = set(self.entries)
         self._sizes = {en: nxt - en for en, nxt in
                        zip(self.entries, self.entries[1:] + [self.entries[-1]])}
+        self._pdata_records: dict[int, tuple[int, int]] = self._load_pdata_records()
+
+    def _load_pdata_records(self) -> dict[int, tuple[int, int]]:
+        """把 .pdata 读成 {起始RVA: (结束RVA, 父起始RVA)}。
+
+        编译器会把大函数的冷代码拆成独立片段，再用 UNWIND_INFO 里的链式
+        记录挂回主函数。要判断两个 .pdata 条目是不是同一个函数，就得顺着
+        这条链往上找。
+        """
+        off = self.img.rva2off(self.img.exc_rva)
+        if off is None:
+            return {}
+        buf = self.img.buf
+        out: dict[int, tuple[int, int]] = {}
+        for i in range(self.img.exc_sz // 12):
+            p = off + i * 12
+            if p + 12 > len(buf):
+                break
+            begin, end, unwind = struct.unpack_from("<III", buf, p)
+            parent = INVALID_CHAIN
+            # 低 31 位是 UNWIND_INFO 的 RVA，最高位是异常处理器标记。
+            # 带了处理器就不会是链式记录，直接跳过。
+            unwind_rva = unwind & 0x7FFFFFFF
+            if unwind_rva and (unwind & 0x80000000) == 0:
+                uo = self.img.rva2off(unwind_rva)
+                if uo is not None and uo + 4 <= len(buf) and buf[uo] & 0x4:
+                    # 链式记录跟在 UNWIND_INFO 头后面，按 4 字节对齐
+                    co = (uo + 4 + 3) & ~3
+                    if co + 12 <= len(buf):
+                        parent = struct.unpack_from("<I", buf, co)[0]
+            out[begin] = (end, parent)
+        return out
+
+    def pdata_root(self, f: int) -> int | None:
+        """顺链找到这个片段所属的主函数起始地址。"""
+        if f not in self._pdata_records:
+            return None
+        seen = set()
+        cur = f
+        while cur in self._pdata_records and cur not in seen:
+            seen.add(cur)
+            _end, parent = self._pdata_records[cur]
+            if parent == INVALID_CHAIN:
+                return cur
+            cur = parent
+        return None
+
+    def _decode_last_insn(self, func: int):
+        """反汇编一个 .pdata 区间，返回最后一条指令（用于判断这段有没有收尾）。"""
+        end = self._pdata_records.get(func, (0, 0))[0]
+        start = self.img.rva2off(func)
+        eoff = self.img.rva2off(end)
+        if start is None or eoff is None or eoff <= start:
+            return None
+        try:
+            from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+        except ImportError:
+            return None
+        md = getattr(self, "_x64_disasm_plain", None)
+        if md is None:
+            md = Cs(CS_ARCH_X86, CS_MODE_64)
+            self._x64_disasm_plain = md
+        last = None
+        for ins in md.disasm(bytes(self.img.buf[start:eoff]), func):
+            last = ins
+        return last
+
+    def pdata_chunks(self, function: int, max_chunks: int = 12) -> list[int]:
+        """这个函数名下连续的 .pdata 片段。
+
+        编译器会把一个函数切成几段独立条目（序言段、异常处理段、主体等），
+        这些段之间首尾相接、没有间隙，而下一段真正独立函数也从上一段的
+        末尾开始，光看地址分不出来。区别在于：被切开的段在末尾处还没收尾，
+        真正的函数末尾一定落在 ret/jmp 这类收尾指令上。
+
+        有链式记录时直接按链走，最可靠。
+        """
+        root = self.pdata_root(function)
+        if root is None:
+            return []
+
+        chained = [e for e in self.entries if self.pdata_root(e) == root]
+        if len(chained) > 1:
+            return chained
+
+        out = [root]
+        cur = root
+        for _ in range(max_chunks):
+            end = self._pdata_records.get(cur, (0, 0))[0]
+            if end not in self._eset:
+                break
+            last = self._decode_last_insn(cur)
+            if last is not None and last.mnemonic.startswith("ret"):
+                break
+            if last is not None and last.mnemonic == "jmp" and last.op_str.startswith("0x"):
+                try:
+                    target = int(last.op_str, 16)
+                except ValueError:
+                    target = 0
+                if target not in self._eset:
+                    break
+            out.append(end)
+            cur = end
+        return out
+
+    def direct_callees(self, func: int) -> dict[int, int]:
+        """反汇编本片段，收出指向函数入口的直接 call。"""
+        start = self.img.rva2off(func)
+        size = self._sizes.get(func, 0)
+        if start is None or size < 5:
+            return {}
+        end = min(start + size, len(self.img.buf))
+        try:
+            from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+            from capstone.x86_const import X86_INS_CALL, X86_OP_IMM
+        except ImportError:
+            return {}
+        md = getattr(self, "_x64_disasm", None)
+        if md is None:
+            md = Cs(CS_ARCH_X86, CS_MODE_64)
+            md.detail = True
+            self._x64_disasm = md
+        out: dict[int, int] = {}
+        for ins in md.disasm(bytes(self.img.buf[start:end]), func):
+            if ins.id != X86_INS_CALL or len(ins.operands) != 1:
+                continue
+            op = ins.operands[0]
+            if op.type == X86_OP_IMM and op.imm in self._eset:
+                out[op.imm] = out.get(op.imm, 0) + 1
+        return out
 
     def func_of(self, rva: int) -> int | None:
         i = bisect.bisect_right(self.entries, rva) - 1
@@ -855,9 +1013,12 @@ def resolve(ctx: Ctx, side: str):
         if bd is None:
             failed.append(("BuildDepotDependency", bderr))
             failed.append(("CheckAppOwnership", f"bd: {bderr}"))
+            failed.append(("DepotLicenseGate", f"bd: {bderr}"))
         else:
             emit("BuildDepotDependency", bd, None)
-            emit("CheckAppOwnership", *p2_checkapp(ctx, cm))
+            ca, caerr = p2_checkapp(ctx, cm)
+            emit("CheckAppOwnership", ca, caerr)
+            emit("DepotLicenseGate", *p2_depotlicensegate(ctx, bd, ca))
         emit("SendCallbackToPipe", *p2_scb(ctx))
         emit("GetPackageInfo", *p2_getpackageinfo(ctx))
     return found, failed
@@ -915,7 +1076,8 @@ def cmd_resolve(args):
                       f'rva = "0x{rva:X}"', f'sig = "{sig}"', ""]
         out = Path(args.out_dir) / args.side / f"{sha}.toml"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(lines))
+        # 固定用 LF，别让 Windows 上的默认换行转换把整个文件改一遍
+        out.write_text("\n".join(lines), encoding="utf-8", newline="\n")
         print(f"wrote {out}")
     return 1 if failed else 0
 
